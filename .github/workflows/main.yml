@@ -1,1 +1,105 @@
 
+name: Build APK from uploaded ZIP
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pick ZIP file
+        run: |
+          if [ -f "alhadi-cmms-apk-github.zip" ]; then
+            ZIP_FILE="alhadi-cmms-apk-github.zip"
+          else
+            ZIP_FILE="$(ls -1 alhadi-cmms-apk-github*.zip 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found. Upload alhadi-cmms-apk-github.zip first."
+            ls -la
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Unzip project
+        run: |
+          rm -rf extracted project
+          mkdir extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          if [ -d "extracted/alhadi-cmms-apk-github" ]; then
+            cp -a extracted/alhadi-cmms-apk-github project
+          else
+            APP_DIR="$(find extracted -type f -name package.json -exec dirname {} \; | head -n 1)"
+            if [ -z "$APP_DIR" ]; then
+              echo "package.json not found inside ZIP"
+              find extracted -maxdepth 3 -type f | head -n 50
+              exit 1
+            fi
+            cp -a "$APP_DIR" project
+          fi
+
+          ls -la project
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        working-directory: project
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
+
+      - name: Build React app
+        working-directory: project
+        run: npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Add Android platform if missing
+        working-directory: project
+        run: |
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+
+      - name: Sync Capacitor Android
+        working-directory: project
+        run: npx cap sync android
+
+      - name: Build Debug APK
+        working-directory: project
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Alhadi-CMMS-debug-apk
+          path: project/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
